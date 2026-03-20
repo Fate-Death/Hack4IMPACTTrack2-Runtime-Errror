@@ -4,8 +4,48 @@
  * Analyzes user input for SQL Injection and XSS patterns.
  * Returns classification, risk score, explanation, and prevention suggestions.
  */
+const { spawnSync } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 
-// ─── Pattern Definitions ───────────────────────────────────────────────────────
+function analyzeNative(input) {
+  let binaryName = process.platform === 'win32' ? 'pattern_detect.exe' : 'pattern_detect';
+  let binaryPath = path.join(__dirname, 'c_module', binaryName);
+  
+  if (!fs.existsSync(binaryPath)) {
+    console.warn(`Native binary not found at ${binaryPath}. Falling back to JS engine.`);
+    return null;
+  }
+  
+  try {
+    const result = spawnSync(binaryPath, [], { input: input, encoding: 'utf-8' });
+    if (result.error) throw result.error;
+    
+    const nativeData = JSON.parse(result.stdout);
+    const detectedPatterns = nativeData.patterns ? nativeData.patterns.map(p => ({
+      name: p.name,
+      type: p.type,
+      description: `Detected by Native C Engine`,
+      weight: p.weight,
+    })) : [];
+    
+    return {
+      classification: nativeData.classification,
+      riskScore: nativeData.riskScore,
+      explanation: nativeData.classification === 'Safe' 
+        ? 'Native engine found no known attack patterns.'
+        : `⚠️ NATIVE MODULE DETECTED MALICIOUS INPUT. Secondary analysis confirmed ${nativeData.patternsDetected} pattern(s).`,
+      detectedPatterns,
+      preventionSuggestions: generatePreventionSuggestions(detectedPatterns),
+      sanitizedInput: escapeHtml(input || ''),
+      source: 'native'
+    };
+  } catch (err) {
+    console.error('Native execution failed:', err);
+    return null;
+  }
+}
+
 
 const SQL_PATTERNS = [
   { regex: /'\s*OR\s+.+=.+/i,             weight: 30, name: "OR-based SQL Injection",     desc: "Tautology attack using OR clause to bypass authentication" },
@@ -64,7 +104,9 @@ function escapeHtml(str) {
 
 // ─── Main Analysis Function ─────────────────────────────────────────────────────
 
-function analyzeInput(input) {
+function analyzeInput(input, options = {}) {
+  const { engine = 'js', wafStrictness = 'off' } = options;
+
   if (!input || typeof input !== 'string' || input.trim().length === 0) {
     return {
       classification: 'Safe',
@@ -73,11 +115,40 @@ function analyzeInput(input) {
       detectedPatterns: [],
       preventionSuggestions: ['Always validate and sanitize user input.'],
       sanitizedInput: escapeHtml(input || ''),
+      source: engine
     };
+  }
+
+  // If native engine requested, try to run it
+  if (engine === 'native') {
+    const nativeResult = analyzeNative(input);
+    if (nativeResult) return nativeResult;
   }
 
   const detectedPatterns = [];
   let totalWeight = 0;
+
+  // WAF Simulation Fake Patterns (if strictness is high)
+  if (wafStrictness === 'strict') {
+    if (input.includes('<') || input.includes('>')) {
+      detectedPatterns.push({
+        name: "WAF Strict Blocking (HTML tags)",
+        type: "WAF Rule",
+        description: "Strict WAF block due to presence of angle brackets.",
+        weight: 35
+      });
+      totalWeight += 35;
+    }
+    if (input.includes("'") || input.includes('"') || input.includes(';')) {
+      detectedPatterns.push({
+        name: "WAF Strict Blocking (Punctuation)",
+        type: "WAF Rule",
+        description: "Strict WAF block due to unescaped quotes or semicolons.",
+        weight: 25
+      });
+      totalWeight += 25;
+    }
+  }
 
   // Check SQL injection patterns
   for (const pattern of SQL_PATTERNS) {
@@ -141,6 +212,7 @@ function analyzeInput(input) {
     detectedPatterns,
     preventionSuggestions,
     sanitizedInput: escapeHtml(input),
+    source: 'js'
   };
 }
 

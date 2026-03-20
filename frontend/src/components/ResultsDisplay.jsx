@@ -62,6 +62,23 @@ function ResultsDisplay({ results }) {
           <div className={`classification classification--${riskLevel}`}>
             <span className="classification__dot" />
             Input Classification: {analysis.classification}
+            {analysis.source && (
+              <span style={{ marginLeft: 'auto', fontSize: '0.8rem', opacity: 0.7, background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                Engine: {analysis.source === 'native' ? 'C Native Module' : 'JavaScript Engine'}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* LLM Explanation */}
+        {analysis?.llmExplanation && (
+          <div className="llm-card" style={{ background: 'var(--bg-lighter)', padding: '1rem', borderRadius: '8px', borderLeft: '4px solid #61dafb', margin: '1rem 0' }}>
+            <h4 style={{ margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#61dafb' }}>
+              🤖 AI Code Assistant Summarizer
+            </h4>
+            <p style={{ margin: 0, fontSize: '0.95rem', lineHeight: '1.4', color: 'var(--text)' }}>
+              {analysis.llmExplanation}
+            </p>
           </div>
         )}
 
@@ -125,9 +142,32 @@ function ResultsDisplay({ results }) {
             <div className="xss-preview__label">
               {results.outputType || 'Rendered Output'}
             </div>
-            <div className="xss-preview__content">
-              {results.renderedContent}
+            {results.attackWorked ? (
+              <div className="xss-preview__content" style={{ border: '2px dashed #ff4444', padding: '1rem', background: 'rgba(255, 68, 68, 0.1)', overflow: 'hidden' }}>
+                <p style={{ marginTop: 0, color: '#ff4444', fontSize: '0.8rem', fontWeight: 'bold' }}>⚠️ DANGER: Real execution sandbox</p>
+                <iframe 
+                  sandbox="allow-scripts" 
+                  srcDoc={results.renderedContent} 
+                  style={{ width: '100%', height: '50px', border: 'none', background: 'white' }}
+                />
+              </div>
+            ) : (
+              <div className="xss-preview__content">
+                {results.renderedContent}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* CMD Rendered Output */}
+        {results.type === 'cmd' && results.output && (
+          <div className="xss-preview">
+            <div className="xss-preview__label">
+              Terminal Output
             </div>
+            <pre className="xss-preview__content" style={{ background: '#0d1117', color: '#00ff00', padding: '1rem', overflowX: 'auto', fontFamily: 'monospace', borderRadius: '6px' }}>
+              {results.output}
+            </pre>
           </div>
         )}
 

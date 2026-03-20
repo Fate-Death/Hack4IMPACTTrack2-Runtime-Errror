@@ -19,15 +19,15 @@ app.get('/api/health', (req, res) => {
 // ─── SQL Injection Endpoint ─────────────────────────────────────────────────────
 
 app.post('/api/sql-injection', (req, res) => {
-  const { username, password, mode } = req.body;
+  const { username, password, mode, engine, wafStrictness } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required.' });
   }
 
   // AI analysis on both inputs
-  const usernameAnalysis = analyzeInput(username);
-  const passwordAnalysis = analyzeInput(password);
+  const usernameAnalysis = analyzeInput(username, { engine, wafStrictness });
+  const passwordAnalysis = analyzeInput(password, { engine, wafStrictness });
 
   // Combine analyses — take the worse score
   const combinedRiskScore = Math.max(usernameAnalysis.riskScore, passwordAnalysis.riskScore);
@@ -106,6 +106,13 @@ app.post('/api/sql-injection', (req, res) => {
     }
   }
 
+  let llmExplanation = '';
+  if (combinedRiskScore > 25) {
+    llmExplanation = `[LLM AI Summary]: This payload attempts SQL Injection (primarily "${allPatterns[0]?.name || 'a database bypass attack'}"). It manipulates the query logic. In vulnerable modes that use string concatenation, it will succeed. Ensure you use Parameterized Queries where the database treats inputs strictly as data.`;
+  } else {
+    llmExplanation = `[LLM AI Summary]: The input appears safe and contains no obvious SQL injection characters.`;
+  }
+
   res.json({
     ...result,
     analysis: {
@@ -114,6 +121,8 @@ app.post('/api/sql-injection', (req, res) => {
       explanation: combinedExplanation,
       detectedPatterns: allPatterns,
       preventionSuggestions: combinedSuggestions,
+      source: usernameAnalysis.source,
+      llmExplanation,
     },
   });
 });
@@ -121,13 +130,13 @@ app.post('/api/sql-injection', (req, res) => {
 // ─── XSS Endpoint ───────────────────────────────────────────────────────────────
 
 app.post('/api/xss', (req, res) => {
-  const { comment, mode } = req.body;
+  const { comment, mode, engine, wafStrictness } = req.body;
 
   if (!comment) {
     return res.status(400).json({ error: 'Comment is required.' });
   }
 
-  const analysis = analyzeInput(comment);
+  const analysis = analyzeInput(comment, { engine, wafStrictness });
 
   let result;
 
@@ -157,6 +166,13 @@ app.post('/api/xss', (req, res) => {
     };
   }
 
+  let llmExplanation = '';
+  if (analysis.riskScore > 25) {
+    llmExplanation = `[LLM AI Summary]: This attempts a Cross-Site Scripting (XSS) attack. By injecting untrusted HTML/JavaScript, an attacker can execute code in another user's browser. You must HTML-escape outputs before rendering them to prevent the browser from interpreting them as code.`;
+  } else {
+    llmExplanation = `[LLM AI Summary]: The text doesn't contain active JavaScript or HTML tags, meaning it's generally safe down to the browser level.`;
+  }
+
   res.json({
     ...result,
     analysis: {
@@ -165,6 +181,69 @@ app.post('/api/xss', (req, res) => {
       explanation: analysis.explanation,
       detectedPatterns: analysis.detectedPatterns,
       preventionSuggestions: analysis.preventionSuggestions,
+      source: analysis.source,
+      llmExplanation,
+    },
+  });
+});
+
+// ─── Command Injection Endpoint ─────────────────────────────────────────────────
+
+app.post('/api/command-injection', (req, res) => {
+  const { target, mode, engine, wafStrictness } = req.body;
+
+  if (!target) {
+    return res.status(400).json({ error: 'Target is required.' });
+  }
+
+  const analysis = analyzeInput(target, { engine, wafStrictness });
+
+  let result;
+  
+  // Custom simple detection for CMD inject
+  const isMalicious = /;|&|\||`|\$|\n|<|>/.test(target);
+
+  if (mode === 'vulnerable') {
+    // ⚠️ VULNERABLE: Direct execution (simulated)
+    result = {
+      success: true,
+      attackWorked: isMalicious,
+      query: `ping -c 4 ${target}`,
+      queryType: 'Direct OS Execution (VULNERABLE)',
+      message: isMalicious
+        ? '🚨 Attack Successful! The injected OS commands were executed on the server.'
+        : '✅ Ping command executed successfully on the target.',
+      output: isMalicious 
+        ? `PING ${target.split(/[;&|`$]/)[0]} (127.0.0.1): 56 data bytes\n...\nroot:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n...`
+        : `PING ${target} (127.0.0.1): 56 data bytes\n64 bytes from 127.0.0.1: icmp_seq=0 ttl=64 time=0.035 ms\n...`
+    };
+  } else {
+    // ✅ SECURE: Input validation / escaping
+    const sanitizedTarget = target.replace(/[;&|`$\n<>]/g, '');
+    result = {
+      success: true,
+      attackWorked: false,
+      query: `ping -c 4 ${sanitizedTarget}`,
+      queryType: 'Sanitized/Parameterized Execution (SECURE)',
+      message: isMalicious
+        ? '✅ Attack Blocked! Malicious characters were stripped before execution.'
+        : '✅ Ping command executed successfully on the target.',
+      output: `PING ${sanitizedTarget} (127.0.0.1): 56 data bytes\n64 bytes from 127.0.0.1: icmp_seq=0 ttl=64 time=0.035 ms\n...`
+    };
+  }
+
+  let llmExplanation = '';
+  if (analysis.riskScore > 25 || isMalicious) {
+    llmExplanation = `[LLM AI Summary]: The input "${target}" contains patterns typical of Command Injection. By appending OS meta-characters like semicolons or pipes, an attacker can trick the server into executing arbitrary commands. Using safe APIs or strict input validation prevents this.`;
+  } else {
+    llmExplanation = `[LLM AI Summary]: The input appears safe. It is a standard IP or hostname.`;
+  }
+
+  res.json({
+    ...result,
+    analysis: {
+      ...analysis,
+      llmExplanation
     },
   });
 });
@@ -172,13 +251,13 @@ app.post('/api/xss', (req, res) => {
 // ─── Standalone Analysis Endpoint ───────────────────────────────────────────────
 
 app.post('/api/analyze', (req, res) => {
-  const { input } = req.body;
+  const { input, engine, wafStrictness } = req.body;
 
   if (!input) {
     return res.status(400).json({ error: 'Input is required.' });
   }
 
-  const analysis = analyzeInput(input);
+  const analysis = analyzeInput(input, { engine, wafStrictness });
   res.json(analysis);
 });
 
@@ -195,6 +274,7 @@ app.listen(PORT, () => {
   console.log(`\n🛡️  WebShield AI Backend running on http://localhost:${PORT}`);
   console.log(`   ├─ POST /api/sql-injection  — SQL Injection simulation`);
   console.log(`   ├─ POST /api/xss            — XSS simulation`);
+  console.log(`   ├─ POST /api/command-injection — Command injection simulation`);
   console.log(`   ├─ POST /api/analyze         — Standalone AI analysis`);
   console.log(`   ├─ GET  /api/users           — List sample users`);
   console.log(`   └─ GET  /api/health          — Health check\n`);
